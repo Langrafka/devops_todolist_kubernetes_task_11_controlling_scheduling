@@ -1,9 +1,67 @@
+# todoapp-deployment.yml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: todo
+---
+# Secret для конфігурації підключення до MySQL (DB_HOST, DB_USER, DB_PASSWORD, SECRET_KEY тощо)
+# Припускаємо, що він називається 'app-secret', як у вашому деплойменті.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: todo
+type: Opaque
+stringData:
+  SECRET_KEY: "your-secret-key-goes-here"
+  DB_HOST: "mysql.mysql.svc.cluster.local"
+  DB_USER: "appuser"
+  DB_PASSWORD: "apppass"
+  DB_NAME: "todo"
+---
+# ConfigMap для загальних налаштувань (наприклад, PYTHONUNBUFFERED)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: todo
+data:
+  PYTHONUNBUFFERED: "1"
+---
+# PersistentVolumeClaim для робочих даних (наприклад, файлів)
+# Потрібно, оскільки Deployment посилається на volume data -> pvc-data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-data
+  namespace: todo
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Service для доступу до додатку
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo-svc
+  namespace: todo
+spec:
+  selector: { app: todoapp }
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+# Deployment з правилами планування (Вимога 6)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: todoapp
-  namespace: todoapp
+  name: todo-app
+  namespace: todo
 spec:
+  replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -17,6 +75,27 @@ spec:
       labels:
         app: todoapp
     spec:
+      # === БЛОК ПЛАНУВАННЯ (Вимога 6) ===
+      affinity:
+        # 6.1. Node Affinity: PreferedDuringSchedulingIgnoredDuringExecution
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: ["todoapp"] # Бажано на нодах з лейблом app=todoapp
+        # 6.2. Pod Anti-Affinity: requiredDuringSchedulingIgnoredDuringExecution
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values: ["todoapp"] # Репліки не повинні розміщуватися на одній ноді
+            topologyKey: kubernetes.io/hostname
+      # =================================
       containers:
       - name: todoapp
         image: ikulyk404/todoapp:4.0.1

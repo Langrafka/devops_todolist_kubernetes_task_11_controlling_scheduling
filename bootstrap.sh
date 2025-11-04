@@ -1,20 +1,59 @@
-#!/bin/bash
-kubectl apply -f .infrastructure/mysql/ns.yml
-kubectl apply -f .infrastructure/mysql/configMap.yml
-kubectl apply -f .infrastructure/mysql/secret.yml
-kubectl apply -f .infrastructure/mysql/service.yml
-kubectl apply -f .infrastructure/mysql/statefulSet.yml
+#!/usr/bin/env bash
+# bootstrap.sh: Скрипт розгортання та налаштування кластера
+set -euo pipefail
 
-kubectl apply -f .infrastructure/app/ns.yml
-kubectl apply -f .infrastructure/app/pv.yml
-kubectl apply -f .infrastructure/app/pvc.yml
-kubectl apply -f .infrastructure/app/secret.yml
-kubectl apply -f .infrastructure/app/configMap.yml
-kubectl apply -f .infrastructure/app/clusterIp.yml
-kubectl apply -f .infrastructure/app/nodeport.yml
-kubectl apply -f .infrastructure/app/hpa.yml
-kubectl apply -f .infrastructure/app/deployment.yml
+# 1. Створення кластера (Вимога 2)
+echo "--- 1. Створення кластера KIND ---"
+kind delete cluster || true
+kind create cluster --config cluster.yml
 
-# Install Ingress Controller
-kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
-# kubectl apply -f .infrastructure/ingress/ingress.yml
+# Очікування готовності нод
+echo "--- Очікування готовності нод ---"
+kubectl wait --for=condition=Ready nodes --all --timeout=180s
+
+# 2. Налаштування Нод (Labels & Taints) (Вимоги 3, 4)
+echo "--- 2. Налаштування Node Labels та Taints ---"
+
+# 2 ноди для MySQL (kind-worker, kind-worker2)
+kubectl label nodes kind-worker app=mysql --overwrite
+kubectl label nodes kind-worker2 app=mysql --overwrite
+
+# 2 ноди для ToDo App (kind-worker3, kind-worker4)
+kubectl label nodes kind-worker3 app=todoapp --overwrite
+kubectl label nodes kind-worker4 app=todoapp --overwrite
+
+# 4. Taint nodes labeled with app=mysql with app=mysql:NoSchedule
+kubectl taint nodes -l app=mysql app=mysql:NoSchedule --overwrite
+
+# 3. Розгортання MySQL (StatefulSet) - Вимога 5
+echo "--- 3. Розгортання MySQL (StatefulSet) ---"
+kubectl apply -f mysql-statefulset.yml
+kubectl -n mysql rollout status sts/mysql --timeout=240s
+
+# 4. Розгортання ToDo App (Deployment) - Вимога 6
+echo "--- 4. Розгортання ToDo App (Deployment) ---"
+kubectl apply -f todoapp-deployment.yml
+kubectl -n todo rollout status deploy/todo-app --timeout=240s
+
+# 5. Фінальна Валідація (Вимоги 3, 5, 6)
+echo ""
+echo "========================================================"
+echo "    Фінальна Валідація: Перевірка Правил Планування     "
+echo "========================================================"
+
+# Валідація нод (Taints/Labels)
+echo "[Nodes labels/taints - Вимога 3 та 4]"
+kubectl get nodes --show-labels | grep worker
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" taints="}{.spec.taints}{"\n"}{end}' | grep worker
+
+# Валідація MySQL (Affinity/Toleration) - Вимога 5
+echo "--------------------------------------------------------"
+echo "[MySQL pods - Перевірка Affinity/Toleration (Вимога 5)]"
+kubectl -n mysql get po -l app=mysql -o wide
+kubectl -n mysql get pod -l app=mysql -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
+
+# Валідація ToDo App (Preferred Affinity/Anti-Affinity) - Вимога 6
+echo "--------------------------------------------------------"
+echo "[TODO pods - Перевірка Preferred Affinity/Anti-Affinity (Вимога 6)]"
+kubectl -n todo get po -l app=todoapp -o wide
+kubectl -n todo get pod -l app=todoapp -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
