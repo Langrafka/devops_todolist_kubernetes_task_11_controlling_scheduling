@@ -2,7 +2,7 @@
 # bootstrap.sh: Скрипт розгортання та налаштування кластера
 set -euo pipefail
 
-# 1. Створення кластера (Вимога 2)
+# 1. Створення кластера
 echo "--- 1. Створення кластера KIND ---"
 kind delete cluster || true
 kind create cluster --config cluster.yml
@@ -11,31 +11,31 @@ kind create cluster --config cluster.yml
 echo "--- Очікування готовності нод ---"
 kubectl wait --for=condition=Ready nodes --all --timeout=180s
 
-# 2. Налаштування Нод (Labels & Taints) (Вимоги 3, 4)
+# 2. Налаштування Нод (Labels & Taints)
 echo "--- 2. Налаштування Node Labels та Taints ---"
 
-# 2 ноди для MySQL (kind-worker, kind-worker2)
+# 2 ноди для MySQL
 kubectl label nodes kind-worker app=mysql --overwrite
 kubectl label nodes kind-worker2 app=mysql --overwrite
 
-# 2 ноди для ToDo App (kind-worker3, kind-worker4)
+# 2 ноди для ToDo App
 kubectl label nodes kind-worker3 app=todoapp --overwrite
 kubectl label nodes kind-worker4 app=todoapp --overwrite
 
 # 4. Taint nodes labeled with app=mysql with app=mysql:NoSchedule
 kubectl taint nodes -l app=mysql app=mysql:NoSchedule --overwrite
 
-# 3. Розгортання MySQL (StatefulSet) - Вимога 5
+# 3. Розгортання MySQL (StatefulSet) - ВИПРАВЛЕНО ШЛЯХ
 echo "--- 3. Розгортання MySQL (StatefulSet) ---"
-kubectl apply -f mysql-statefulset.yml
+kubectl apply -f .infrastructure/mysql/statefulSet.yml
 kubectl -n mysql rollout status sts/mysql --timeout=240s
 
-# 4. Розгортання ToDo App (Deployment) - Вимога 6
+# 4. Розгортання ToDo App (Deployment) - ВИПРАВЛЕНО ШЛЯХ
 echo "--- 4. Розгортання ToDo App (Deployment) ---"
-kubectl apply -f todoapp-deployment.yml
+kubectl apply -f .infrastructure/app/deployment.yml
 kubectl -n todo rollout status deploy/todo-app --timeout=240s
 
-# 5. Фінальна Валідація (Вимоги 3, 5, 6)
+# 5. Фінальна Валідація
 echo ""
 echo "========================================================"
 echo "    Фінальна Валідація: Перевірка Правил Планування     "
@@ -48,12 +48,10 @@ kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" taints="}{.sp
 
 # Валідація MySQL (Affinity/Toleration) - Вимога 5
 echo "--------------------------------------------------------"
-echo "[MySQL pods - Перевірка Affinity/Toleration (Вимога 5)]"
 kubectl -n mysql get po -l app=mysql -o wide
 kubectl -n mysql get pod -l app=mysql -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
 
 # Валідація ToDo App (Preferred Affinity/Anti-Affinity) - Вимога 6
 echo "--------------------------------------------------------"
-echo "[TODO pods - Перевірка Preferred Affinity/Anti-Affinity (Вимога 6)]"
 kubectl -n todo get po -l app=todoapp -o wide
 kubectl -n todo get pod -l app=todoapp -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName
